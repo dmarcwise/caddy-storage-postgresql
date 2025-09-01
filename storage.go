@@ -111,14 +111,14 @@ type pglockLogger struct {
 }
 
 func (l pglockLogger) Debug(msg string, args ...any) {
-	if l.logger != nil && l.isEnabled {
-		l.logger.Debug(fmt.Sprintf(msg, args...))
+	if l.isEnabled {
+		l.logger.Debug("pglock: " + fmt.Sprintf(msg, args...))
 	}
 }
 
 func (l pglockLogger) Error(msg string, args ...any) {
-	if l.logger != nil && l.isEnabled {
-		l.logger.Error(fmt.Sprintf(msg, args...))
+	if l.isEnabled {
+		l.logger.Error("pglock: " + fmt.Sprintf(msg, args...))
 	}
 }
 
