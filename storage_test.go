@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"os"
 	"testing"
 	"time"
 
@@ -17,7 +18,12 @@ func createStorage(t *testing.T) *PostgresStorage {
 	t.Helper()
 
 	s := NewPostgresStorage()
-	s.ConnectionString = "postgres://postgres:@localhost:5432/caddy_tests"
+
+	s.ConnectionString = os.Getenv("TESTS_CONNECTION_STRING")
+	if s.ConnectionString == "" {
+		s.ConnectionString = "postgres://postgres:@localhost:5432/caddy_tests"
+	}
+
 	s.InstanceId = uuid.New().String()
 
 	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
