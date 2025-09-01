@@ -69,7 +69,7 @@ jobs:
       - name: Build Caddy with xcaddy
         run: |
           set -euo pipefail
-          xcaddy build --output ./caddy
+          xcaddy build --with github.com/dmarcwise/caddy-storage-postgres=. --output ./caddy
           ./caddy version
       - name: Run Caddy (background) and wait for readiness
         run: |
@@ -79,9 +79,9 @@ jobs:
           CADDY_PID=$!
           echo "CADDY_PID=$CADDY_PID" >> "$GITHUB_ENV"
 
-          # Wait for port 443 to open
-          for i in {1..30}; do
-            if curl -fsS https://test.localhost/health >/dev/null 2>&1; then
+          # Wait for the test domain to be ready on 443
+          for i in {1..15}; do
+            if curl -fsS --connect-timeout 1 --max-time 2 https://test.localhost/health >/dev/null 2>&1; then
               echo "Caddy is up."
               exit 0
             fi
