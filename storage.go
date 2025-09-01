@@ -7,11 +7,13 @@ import (
 	"io/fs"
 	"sync"
 
+	"cirello.io/pglock"
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/certmagic"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 	"go.uber.org/zap"
 )
 
@@ -22,9 +24,13 @@ func init() {
 type PostgresStorage struct {
 	logger *zap.Logger
 	pool   *pgxpool.Pool
-	locks  sync.Map // name -> *pgxpool.Conn
+	locks  sync.Map // name -> *pglock.Lock
+	pglock *pglock.Client
 
 	ConnectionString string `json:"connection_string,omitempty"`
+	ObjectsTable     string `json:"objects_table,omitempty"`
+	LocksTable       string `json:"locks_table,omitempty"`
+	InstanceId       string `json:"instance_id,omitempty"`
 }
 
 func (s *PostgresStorage) CertMagicStorage() (certmagic.Storage, error) {
@@ -47,6 +53,11 @@ func NewPostgresStorage() *PostgresStorage {
 func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 	s.logger = ctx.Logger(s)
 
+	if s.ConnectionString == "" {
+		return fmt.Errorf("connection_string is required")
+	}
+
+	// Create PostgreSQL connection pool
 	pool, err := pgxpool.New(ctx.Context, s.ConnectionString)
 	if err != nil {
 		s.logger.Error("could not create connection pool", zap.Error(err))
@@ -54,6 +65,44 @@ func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 	}
 
 	s.pool = pool
+
+	// Initialize pglock
+
+	if s.LocksTable == "" {
+		s.LocksTable = "caddy_locks"
+	}
+
+	if s.InstanceId == "" {
+		instanceId, err := caddy.InstanceID()
+		if err != nil {
+			s.logger.Error("could not get caddy instance id", zap.Error(err))
+			return err
+		}
+
+		s.InstanceId = instanceId.String()
+	}
+
+	s.pglock, err = pglock.UnsafeNew(
+		stdlib.OpenDBFromPool(s.pool),
+		pglock.WithCustomTable(s.LocksTable),
+		pglock.WithOwner(s.InstanceId),
+		// TODO: add the other pglock options
+	)
+
+	if err != nil {
+		s.logger.Error("could not create pglock client", zap.Error(err))
+		return err
+	}
+
+	if err = s.pglock.TryCreateTable(); err != nil {
+		s.logger.Error("could not create pglock table", zap.Error(err))
+		return err
+	}
+
+	// Ensure storage objects table exists
+	if s.ObjectsTable == "" {
+		s.ObjectsTable = "caddy_certmagic_objects"
+	}
 
 	if err := s.ensureTableExists(ctx.Context); err != nil {
 		s.logger.Error("could not ensure certmagic_data table exists", zap.Error(err))
@@ -64,70 +113,38 @@ func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 }
 
 func (s *PostgresStorage) ensureTableExists(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS certmagic_data (
+	_, err := s.pool.Exec(ctx, fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s (
 			key TEXT PRIMARY KEY,
 			value BYTEA,
 			modified TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 		)
-	`)
+	`, s.ObjectsTable))
 
 	return err
 }
 
 func (s *PostgresStorage) Lock(ctx context.Context, name string) error {
-	// Hash the name to a 64-bit integer key for the advisory lock
-	// https://www.postgresql.org/docs/current/functions-admin.html#FUNCTIONS-ADVISORY-LOCKS
-	key := hash64(name)
-
-	// Acquire a dedicated connection, which will stay pinned until Unlock
-	conn, err := s.pool.Acquire(ctx)
+	lock, err := s.pglock.AcquireContext(ctx, name)
 	if err != nil {
-		return fmt.Errorf("could not acquire connection from pool: %w", err)
+		return fmt.Errorf("could not acquire pglock: %w", err)
 	}
 
-	// Block until the advisory lock is obtained or ctx is canceled
-	// TODO: timeout
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", key); err != nil {
-		conn.Release()
-		return err
-	}
-
-	s.locks.Store(name, conn)
+	s.locks.Store(name, lock)
 
 	return nil
 }
 
-func (s *PostgresStorage) Unlock(_ context.Context, name string) error {
-	// Retrieve the connection associated with this lock
-	v, ok := s.locks.Load(name)
+func (s *PostgresStorage) Unlock(ctx context.Context, name string) error {
+	v, ok := s.locks.LoadAndDelete(name)
 	if !ok {
 		return fmt.Errorf("unlock without prior lock: %q", name)
 	}
 
-	conn := v.(*pgxpool.Conn)
+	lock := v.(*pglock.Lock)
 
-	// Always return the connection to the pool and forget about it
-	defer func() {
-		conn.Release()
-		s.locks.Delete(name)
-	}()
-
-	key := hash64(name)
-
-	// Use a non-cancelable context so that unlock is not interrupted
-	ctx := context.Background()
-
-	_, err := conn.Exec(ctx, "SELECT pg_advisory_unlock($1)", key)
-
-	// The unlock can still fail. We treat the connection as poisoned and
-	// close the underlying session so that advisory locks are dropped automatically
-	if err != nil {
-		if raw := conn.Conn(); raw != nil {
-			_ = raw.Close(ctx)
-		}
-
-		return err
+	if err := s.pglock.ReleaseContext(ctx, lock); err != nil {
+		return fmt.Errorf("could not release pglock: %w", err)
 	}
 
 	return nil
@@ -217,10 +234,10 @@ func (s *PostgresStorage) Stat(ctx context.Context, key string) (certmagic.KeyIn
 }
 
 func (s *PostgresStorage) Cleanup() error {
-	// Release all acquired connections and clean locks mapping
+	// Release locks and clean locks mapping
 	s.locks.Range(func(key, value any) bool {
-		if conn, ok := value.(*pgxpool.Conn); ok {
-			conn.Release()
+		if lock, ok := value.(*pglock.Lock); ok {
+			_ = lock.Close()
 		}
 		s.locks.Delete(key)
 		return true
