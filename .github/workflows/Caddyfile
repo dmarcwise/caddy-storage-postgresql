@@ -3,6 +3,9 @@
     connection_string "postgres://postgres:@localhost:5432/postgres"
     debug
   }
+  log {
+    level DEBUG
+  }
 }
 
 test.localhost {
