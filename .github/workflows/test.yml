@@ -69,13 +69,15 @@ jobs:
       - name: Build Caddy with xcaddy
         run: |
           set -euo pipefail
-          xcaddy build --with github.com/dmarcwise/caddy-storage-postgres=. --output ./caddy
+          xcaddy build --with github.com/dmarcwise/caddy-storage-postgresql=. --output ./caddy
           ./caddy version
+          # Check that the module is included
+          ./caddy list-modules | grep -Fxq "caddy.storage.postgresql"
       - name: Run Caddy (background) and wait for readiness
         run: |
           set -euo pipefail
           # Start Caddy in background and capture logs
-          ( ./caddy run --config .github/workflows/Caddyfile 2>&1 | tee caddy.log ) &
+          ( sudo ./caddy run --config .github/workflows/Caddyfile 2>&1 | tee caddy.log ) &
           CADDY_PID=$!
           echo "CADDY_PID=$CADDY_PID" >> "$GITHUB_ENV"
 
