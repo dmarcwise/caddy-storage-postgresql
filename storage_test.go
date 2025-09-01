@@ -215,7 +215,7 @@ func Test_Load_NonExistent(t *testing.T) {
 	assert.Nil(t, loaded)
 }
 
-func Test_Stat_Simple(t *testing.T) {
+func Test_Stat_File(t *testing.T) {
 	s := createStorage(t)
 	ctx := t.Context()
 
@@ -250,6 +250,21 @@ func Test_Stat_Directory(t *testing.T) {
 	assert.Equal(t, int64(0), info.Size)
 	assert.WithinDuration(t, time.Now(), info.Modified, time.Second)
 	assert.False(t, info.IsTerminal)
+
+	dir = "a/b"
+	info, err = s.Stat(ctx, dir)
+	assert.NoError(t, err)
+	assert.Equal(t, dir, info.Key)
+	assert.Equal(t, int64(0), info.Size)
+	assert.WithinDuration(t, time.Now(), info.Modified, time.Second)
+	assert.False(t, info.IsTerminal)
+
+	info, err = s.Stat(ctx, key)
+	assert.NoError(t, err)
+	assert.Equal(t, key, info.Key)
+	assert.Equal(t, int64(11), info.Size)
+	assert.WithinDuration(t, time.Now(), info.Modified, time.Second)
+	assert.True(t, info.IsTerminal)
 }
 
 func Test_Stat_NonExistent(t *testing.T) {
@@ -317,34 +332,65 @@ func Test_Delete_NonExistent(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func createExampleStructure(t *testing.T, s *PostgresStorage, ctx context.Context) {
+	// Example structure:
+	// certificates/
+	// ├── issuer1
+	// │   └── domain1
+	// │       ├── domain1.crt
+	// │       └── domain1.key
+	// └── issuer2
+	//     ├── domain2
+	//     │   ├── domain2.crt
+	//     │   └── domain2.key
+	//     └── domain3
+	//         ├── domain3.crt
+	//         └── domain3.key
+	// accounts/
+	// └── test1/
+	//     └── account.json
+	// instance.uuid
+	// last_clean.json
+
+	err := s.Store(ctx, "certificates/issuer1/domain1/domain1.crt", []byte("cert1"))
+	assert.NoError(t, err)
+	err = s.Store(ctx, "certificates/issuer1/domain1/domain1.key", []byte("key1"))
+	assert.NoError(t, err)
+
+	err = s.Store(ctx, "certificates/issuer2/domain2/domain2.crt", []byte("cert2"))
+	assert.NoError(t, err)
+	err = s.Store(ctx, "certificates/issuer2/domain2/domain2.key", []byte("key2"))
+	assert.NoError(t, err)
+
+	err = s.Store(ctx, "certificates/issuer2/domain3/domain3.crt", []byte("cert3"))
+	assert.NoError(t, err)
+	err = s.Store(ctx, "certificates/issuer2/domain3/domain3.key", []byte("key3"))
+	assert.NoError(t, err)
+
+	err = s.Store(ctx, "accounts/test1/account.json", []byte("{}"))
+	assert.NoError(t, err)
+
+	err = s.Store(ctx, "instance.uuid", []byte("some-uuid"))
+	assert.NoError(t, err)
+
+	err = s.Store(ctx, "last_clean.json", []byte("{}"))
+	assert.NoError(t, err)
+}
+
 func Test_List_NonRecursive_Root(t *testing.T) {
 	s := createStorage(t)
 	ctx := t.Context()
 
-	// Set up a structure:
-	// a/b/c/file1.txt
-	// a/b/c/file2.txt
-	// a/b/file3.txt
-	// a/file4.txt
-	// file5.txt
-
-	err := s.Store(ctx, "a/b/c/file1.txt", []byte("data1"))
-	assert.NoError(t, err)
-	err = s.Store(ctx, "a/b/c/file2.txt", []byte("data2"))
-	assert.NoError(t, err)
-	err = s.Store(ctx, "a/b/file3.txt", []byte("data3"))
-	assert.NoError(t, err)
-	err = s.Store(ctx, "a/file4.txt", []byte("data4"))
-	assert.NoError(t, err)
-	err = s.Store(ctx, "file5.txt", []byte("data5"))
-	assert.NoError(t, err)
+	createExampleStructure(t, s, ctx)
 
 	entries, err := s.List(ctx, "", false)
 	assert.NoError(t, err)
 
 	expectedKeys := []string{
-		"a",
-		"file5.txt",
+		"certificates",
+		"accounts",
+		"instance.uuid",
+		"last_clean.json",
 	}
 
 	assert.ElementsMatch(t, expectedKeys, entries)
@@ -354,69 +400,71 @@ func Test_List_NonRecursive(t *testing.T) {
 	s := createStorage(t)
 	ctx := t.Context()
 
-	// Set up a structure:
-	// a/b/c/file1.txt
-	// a/b/c/file2.txt
-	// a/b/file3.txt
-	// a/file4.txt
-	// file5.txt
+	createExampleStructure(t, s, ctx)
 
-	err := s.Store(ctx, "a/b/c/file1.txt", []byte("data1"))
-	assert.NoError(t, err)
-	err = s.Store(ctx, "a/b/c/file2.txt", []byte("data2"))
-	assert.NoError(t, err)
-	err = s.Store(ctx, "a/b/file3.txt", []byte("data3"))
-	assert.NoError(t, err)
-	err = s.Store(ctx, "a/file4.txt", []byte("data4"))
-	assert.NoError(t, err)
-	err = s.Store(ctx, "file5.txt", []byte("data5"))
+	entries, err := s.List(ctx, "certificates", false)
 	assert.NoError(t, err)
 
-	entries, err := s.List(ctx, "a/b", false)
+	assert.ElementsMatch(t, []string{
+		"certificates/issuer1",
+		"certificates/issuer2",
+	}, entries)
+
+	entries, err = s.List(ctx, "certificates/issuer1", false)
 	assert.NoError(t, err)
 
-	expectedKeys := []string{
-		"a/b/file3.txt",
-		"a/b/c",
-	}
+	assert.ElementsMatch(t, []string{
+		"certificates/issuer1/domain1",
+	}, entries)
 
-	assert.ElementsMatch(t, expectedKeys, entries)
+	entries, err = s.List(ctx, "certificates/issuer2", false)
+	assert.NoError(t, err)
+
+	assert.ElementsMatch(t, []string{
+		"certificates/issuer2/domain2",
+		"certificates/issuer2/domain3",
+	}, entries)
+
+	entries, err = s.List(ctx, "accounts", false)
+	assert.NoError(t, err)
+
+	assert.ElementsMatch(t, []string{
+		"accounts/test1",
+	}, entries)
+
+	entries, err = s.List(ctx, "last_clean.json", false)
+	assert.NoError(t, err)
+
+	assert.ElementsMatch(t, []string{}, entries)
 }
 
 func Test_List_Recursive_Root(t *testing.T) {
 	s := createStorage(t)
 	ctx := t.Context()
 
-	// Set up a structure:
-	// a/b/c/file1.txt
-	// a/b/c/file2.txt
-	// a/b/file3.txt
-	// a/file4.txt
-	// file5.txt
-
-	err := s.Store(ctx, "a/b/c/file1.txt", []byte("data1"))
-	assert.NoError(t, err)
-	err = s.Store(ctx, "a/b/c/file2.txt", []byte("data2"))
-	assert.NoError(t, err)
-	err = s.Store(ctx, "a/b/file3.txt", []byte("data3"))
-	assert.NoError(t, err)
-	err = s.Store(ctx, "a/file4.txt", []byte("data4"))
-	assert.NoError(t, err)
-	err = s.Store(ctx, "file5.txt", []byte("data5"))
-	assert.NoError(t, err)
+	createExampleStructure(t, s, ctx)
 
 	entries, err := s.List(ctx, "", true)
 	assert.NoError(t, err)
 
 	expectedKeys := []string{
-		"a",
-		"a/b",
-		"a/b/c",
-		"a/b/c/file1.txt",
-		"a/b/c/file2.txt",
-		"a/b/file3.txt",
-		"a/file4.txt",
-		"file5.txt",
+		"certificates",
+		"certificates/issuer1",
+		"certificates/issuer1/domain1",
+		"certificates/issuer1/domain1/domain1.crt",
+		"certificates/issuer1/domain1/domain1.key",
+		"certificates/issuer2",
+		"certificates/issuer2/domain2",
+		"certificates/issuer2/domain2/domain2.crt",
+		"certificates/issuer2/domain2/domain2.key",
+		"certificates/issuer2/domain3",
+		"certificates/issuer2/domain3/domain3.crt",
+		"certificates/issuer2/domain3/domain3.key",
+		"accounts",
+		"accounts/test1",
+		"accounts/test1/account.json",
+		"instance.uuid",
+		"last_clean.json",
 	}
 
 	assert.ElementsMatch(t, expectedKeys, entries)
@@ -426,48 +474,36 @@ func Test_List_Recursive(t *testing.T) {
 	s := createStorage(t)
 	ctx := t.Context()
 
-	// Set up a structure:
-	// a/b/c/file1.txt
-	// a/b/c/file2.txt
-	// a/b/file3.txt
-	// a/file4.txt
-	// file5.txt
+	createExampleStructure(t, s, ctx)
 
-	err := s.Store(ctx, "a/b/c/file1.txt", []byte("data1"))
-	assert.NoError(t, err)
-	err = s.Store(ctx, "a/b/c/file2.txt", []byte("data2"))
-	assert.NoError(t, err)
-	err = s.Store(ctx, "a/b/file3.txt", []byte("data3"))
-	assert.NoError(t, err)
-	err = s.Store(ctx, "a/file4.txt", []byte("data4"))
-	assert.NoError(t, err)
-	err = s.Store(ctx, "file5.txt", []byte("data5"))
+	entries, err := s.List(ctx, "certificates", true)
 	assert.NoError(t, err)
 
-	entries, err := s.List(ctx, "a", true)
+	assert.ElementsMatch(t, []string{
+		"certificates/issuer1",
+		"certificates/issuer1/domain1",
+		"certificates/issuer1/domain1/domain1.crt",
+		"certificates/issuer1/domain1/domain1.key",
+		"certificates/issuer2",
+		"certificates/issuer2/domain2",
+		"certificates/issuer2/domain2/domain2.crt",
+		"certificates/issuer2/domain2/domain2.key",
+		"certificates/issuer2/domain3",
+		"certificates/issuer2/domain3/domain3.crt",
+		"certificates/issuer2/domain3/domain3.key",
+	}, entries)
+
+	entries, err = s.List(ctx, "certificates/issuer2", true)
 	assert.NoError(t, err)
 
-	expectedKeys := []string{
-		"a/b",
-		"a/b/c",
-		"a/b/c/file1.txt",
-		"a/b/c/file2.txt",
-		"a/b/file3.txt",
-		"a/file4.txt",
-	}
-	assert.ElementsMatch(t, expectedKeys, entries)
-
-	entries, err = s.List(ctx, "a/b", true)
-	assert.NoError(t, err)
-
-	expectedKeys = []string{
-		"a/b/c",
-		"a/b/c/file1.txt",
-		"a/b/c/file2.txt",
-		"a/b/file3.txt",
-	}
-
-	assert.ElementsMatch(t, expectedKeys, entries)
+	assert.ElementsMatch(t, []string{
+		"certificates/issuer2/domain2",
+		"certificates/issuer2/domain2/domain2.crt",
+		"certificates/issuer2/domain2/domain2.key",
+		"certificates/issuer2/domain3",
+		"certificates/issuer2/domain3/domain3.crt",
+		"certificates/issuer2/domain3/domain3.key",
+	}, entries)
 }
 
 func Test_List_NonExistent(t *testing.T) {
