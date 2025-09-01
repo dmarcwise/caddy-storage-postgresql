@@ -75,7 +75,7 @@ jobs:
         run: |
           set -euo pipefail
           # Start Caddy in background and capture logs
-          ( ./caddy run --config Caddyfile 2>&1 | tee caddy.log ) &
+          ( ./caddy run --config .github/workflows/Caddyfile 2>&1 | tee caddy.log ) &
           CADDY_PID=$!
           echo "CADDY_PID=$CADDY_PID" >> "$GITHUB_ENV"
 
@@ -92,6 +92,9 @@ jobs:
           echo "::group::Caddy logs"
           cat caddy.log || true
           echo "::endgroup::"
+          
+          kill $CADDY_PID || true
+          exit 1
       - name: Fail on Caddy errors and show logs
         if: always()
         run: |
