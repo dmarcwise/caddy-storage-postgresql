@@ -6,26 +6,32 @@ import (
 
 func (s *PostgresStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
-		var value string
-
-		key := d.Val()
-
-		if !d.Args(&value) {
-			continue
-		}
-
-		switch key {
-		case "connection_string":
-			s.ConnectionString = value
-		case "instance_id":
-			s.InstanceId = value
-		case "debug":
-			if d.NextArg() {
-				return d.ArgErr()
+		for d.NextBlock(0) {
+			switch d.Val() {
+			case "connection_string":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				s.ConnectionString = d.Val()
+				if d.NextArg() {
+					return d.ArgErr()
+				} // no extra args
+			case "instance_id":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				s.InstanceId = d.Val()
+				if d.NextArg() {
+					return d.ArgErr()
+				}
+			case "debug":
+				if d.NextArg() {
+					return d.ArgErr()
+				} // must be bare
+				s.Debug = true
+			default:
+				return d.Errf("unrecognized subdirective %q", d.Val())
 			}
-			s.Debug = true
-		default:
-			return d.ArgErr()
 		}
 	}
 
