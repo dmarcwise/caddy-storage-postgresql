@@ -10,7 +10,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  tests:
+    name: Tests
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -39,3 +40,102 @@ jobs:
         env:
           TESTS_CONNECTION_STRING: postgres://postgres:@localhost:5432/postgres
         run: go test -v ./...
+  smoke-test:
+    name: Smoke test + export
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 1s
+          --health-timeout 2s
+          --health-retries 15
+        ports:
+          - 5432:5432
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.25
+      - name: Install dependencies
+        run: go mod download
+      - name: Install xcaddy
+        run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+      - name: Build Caddy with xcaddy
+        run: |
+          set -euo pipefail
+          xcaddy build --with github.com/dmarcwise/caddy-storage-postgresql=. --output ./caddy
+          ./caddy version
+          # Check that the module is included
+          ./caddy list-modules | grep -Fxq "caddy.storage.postgresql"
+      - name: Run Caddy (background) and wait for readiness
+        run: |
+          set -euo pipefail
+          # Start Caddy in background and capture logs
+          ( sudo ./caddy run --config .github/workflows/Caddyfile 2>&1 | tee caddy.log ) &
+          CADDY_PID=$!
+          echo "CADDY_PID=$CADDY_PID" >> "$GITHUB_ENV"
+
+          # Wait for the test domain to be ready on 443
+          for i in {1..10}; do
+            if curl -fsS --connect-timeout 1 --max-time 2 https://test.localhost/health >/dev/null 2>&1; then
+              echo "Caddy is up."
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "Caddy did not become ready in time."
+          echo "::group::Caddy logs"
+          cat caddy.log || true
+          echo "::endgroup::"
+          
+          kill $CADDY_PID || true
+          exit 1
+      - name: Fail on Caddy errors and show logs
+        if: always()
+        run: |
+          set -euo pipefail
+          echo "::group::Caddy logs"
+          test -f caddy.log && cat caddy.log || echo "No caddy.log found"
+          echo "::endgroup::"
+
+          if grep -Ei "(level=error|ERROR|panic:|fatal:)" caddy.log >/dev/null 2>&1; then
+            echo "Errors found in Caddy logs."
+            exit 1
+          fi
+      - name: Export Caddy storage to tar
+        run: |
+          set -euo pipefail
+          ./caddy storage export --config .github/workflows/Caddyfile --output out.tar
+      - name: Assert keys in tar
+        env:
+          EXPECTED_KEYS: |
+            last_clean.json
+            certificates/local/test.localhost/test.localhost.crt
+            certificates/local/test.localhost/test.localhost.json
+            certificates/local/test.localhost/test.localhost.key
+            pki/authorities/local/intermediate.crt
+            pki/authorities/local/intermediate.key
+            pki/authorities/local/root.crt
+            pki/authorities/local/root.key
+        run: |
+          set -euo pipefail
+          tar -tf out.tar > actual_keys.txt
+          
+          echo "::group::Actual keys in tar"
+          cat actual_keys.txt
+          echo "::endgroup::"
+          
+          echo "::group::Expected keys"
+          echo "$EXPECTED_KEYS"
+          echo "::endgroup::"
+          
+          # Check that the two are identical
+          diff <(echo "$EXPECTED_KEYS" | sed '/^$/d' | sort) <(sort actual_keys.txt)
+          echo "✅ Tar contents match expected keys."
