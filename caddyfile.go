@@ -15,10 +15,6 @@ func (s *PostgresStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 		switch key {
 		case "connection_string":
 			s.ConnectionString = value
-		case "locks_table":
-			s.LocksTable = value
-		case "objects_table":
-			s.ObjectsTable = value
 		case "instance_id":
 			s.InstanceId = value
 		default:

@@ -30,8 +30,6 @@ type PostgresStorage struct {
 	pglock *pglock.Client
 
 	ConnectionString string `json:"connection_string,omitempty"`
-	ObjectsTable     string `json:"objects_table,omitempty"`
-	LocksTable       string `json:"locks_table,omitempty"`
 	InstanceId       string `json:"instance_id,omitempty"`
 }
 
@@ -70,10 +68,6 @@ func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 
 	// Initialize pglock
 
-	if s.LocksTable == "" {
-		s.LocksTable = "caddy_locks"
-	}
-
 	if s.InstanceId == "" {
 		instanceId, err := caddy.InstanceID()
 		if err != nil {
@@ -86,7 +80,7 @@ func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 
 	s.pglock, err = pglock.UnsafeNew(
 		stdlib.OpenDBFromPool(s.pool),
-		pglock.WithCustomTable(s.LocksTable),
+		pglock.WithCustomTable("caddy_locks"),
 		pglock.WithOwner(s.InstanceId),
 		// TODO: add the other pglock options
 	)
@@ -102,10 +96,6 @@ func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 	}
 
 	// Ensure storage objects table exists
-	if s.ObjectsTable == "" {
-		s.ObjectsTable = "caddy_certmagic_objects"
-	}
-
 	if err := s.ensureTableExists(ctx.Context); err != nil {
 		s.logger.Error("could not ensure certmagic_data table exists", zap.Error(err))
 		return err
@@ -115,29 +105,30 @@ func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 }
 
 func (s *PostgresStorage) ensureTableExists(ctx context.Context) error {
-	createQuery := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s (
+	createQuery := `
+		CREATE TABLE IF NOT EXISTS caddy_certmagic_objects (
 			parent    text    NOT NULL,
 			name      text    NOT NULL,
 			is_file   boolean NOT NULL,
 			value     bytea,
 			modified  timestamptz NOT NULL DEFAULT now(),
 			PRIMARY KEY (parent, name),
-		    CONSTRAINT %s CHECK (
+		    CONSTRAINT caddy_certmagic_objects_chk CHECK (
 				(is_file = true AND value IS NOT NULL) OR
 				(is_file = false AND value IS NULL)
 			)
 		)
-	`, s.ObjectsTable, s.ObjectsTable+"_chk")
+	`
 
 	_, err := s.pool.Exec(ctx, createQuery)
 	if err != nil {
 		return err
 	}
 
-	createIndexQuery := fmt.Sprintf(`
-		CREATE INDEX IF NOT EXISTS %s_parent_idx ON %s (parent)
-	`, s.ObjectsTable, s.ObjectsTable)
+	createIndexQuery := `
+		CREATE INDEX IF NOT EXISTS caddy_certmagic_objects_parent_idx
+		ON caddy_certmagic_objects (parent)
+	`
 
 	_, err = s.pool.Exec(ctx, createIndexQuery)
 	return err
@@ -193,11 +184,11 @@ func (s *PostgresStorage) Store(ctx context.Context, key string, value []byte) e
 		parts := strings.Split(parent, "/")
 		curParent := ""
 		for _, part := range parts {
-			var insertQuery = fmt.Sprintf(`
-				INSERT INTO %s (parent, name, is_file, value)
+			var insertQuery = `
+				INSERT INTO caddy_certmagic_objects (parent, name, is_file, value)
 				VALUES ($1, $2, false, NULL)
 				ON CONFLICT (parent, name) DO NOTHING
-			`, s.ObjectsTable)
+			`
 
 			if _, err := tx.Exec(ctx, insertQuery, curParent, part); err != nil {
 				return err
@@ -212,14 +203,14 @@ func (s *PostgresStorage) Store(ctx context.Context, key string, value []byte) e
 	// | parent | name   | is_file | value  | modified |
 	// |--------|--------|---------|--------|----------|
 	// | "a/b/c"| "d.txt"| true    | <data> | now()    |
-	var upsertQuery = fmt.Sprintf(`
-		INSERT INTO %s (parent, name, is_file, value, modified)
-		VALUES ($1, $2, true, $3, now())
+	var upsertQuery = `
+		INSERT INTO caddy_certmagic_objects (parent, name, is_file, value)
+		VALUES ($1, $2, true, $3)
 		ON CONFLICT (parent, name)
 		DO UPDATE SET is_file = EXCLUDED.is_file,
 		              value = EXCLUDED.value,
 		              modified = now()
-	`, s.ObjectsTable)
+	`
 
 	if _, err := tx.Exec(ctx, upsertQuery, parent, name, value); err != nil {
 		return err
@@ -231,10 +222,10 @@ func (s *PostgresStorage) Store(ctx context.Context, key string, value []byte) e
 func (s *PostgresStorage) Load(ctx context.Context, key string) ([]byte, error) {
 	parent, name := splitKey(key)
 
-	var query = fmt.Sprintf(
-		`SELECT value FROM %s WHERE parent = $1 AND name = $2 AND is_file = true`,
-		s.ObjectsTable,
-	)
+	query := `
+		SELECT value FROM caddy_certmagic_objects
+		WHERE parent = $1 AND name = $2 AND is_file = true
+	`
 
 	var value []byte
 	if err := s.pool.QueryRow(ctx, query, parent, name).Scan(&value); err != nil {
@@ -251,13 +242,11 @@ func (s *PostgresStorage) Delete(ctx context.Context, key string) error {
 	parent, name := splitKey(key)
 
 	// Delete the key and all the descendants
-	query := fmt.Sprintf(`DELETE FROM %s
-			WHERE (parent = $1 AND name = $2)
-			OR parent = $3
-			OR parent LIKE $3 || '/%%'
-		`,
-		s.ObjectsTable,
-	)
+	query := `DELETE FROM caddy_certmagic_objects
+		WHERE (parent = $1 AND name = $2)
+		OR parent = $3
+		OR parent LIKE $3 || '/%%'
+	`
 
 	_, err := s.pool.Exec(ctx, query, parent, name, key)
 	if err != nil {
@@ -270,10 +259,7 @@ func (s *PostgresStorage) Delete(ctx context.Context, key string) error {
 func (s *PostgresStorage) Exists(ctx context.Context, key string) bool {
 	parent, name := splitKey(key)
 
-	var query = fmt.Sprintf(
-		`SELECT EXISTS (SELECT 1 FROM %s WHERE parent = $1 AND name = $2)`,
-		s.ObjectsTable,
-	)
+	query := "SELECT EXISTS (SELECT 1 FROM caddy_certmagic_objects WHERE parent = $1 AND name = $2)"
 
 	var ok bool
 	if err := s.pool.QueryRow(ctx, query, parent, name).Scan(&ok); err != nil {
@@ -289,10 +275,7 @@ func (s *PostgresStorage) List(ctx context.Context, path string, recursive bool)
 	if recursive {
 		if path == "" {
 			// Query for all entries
-			var query = fmt.Sprintf(`
-				SELECT parent, name FROM %s
-				ORDER BY parent, name
-			`, s.ObjectsTable)
+			query := "SELECT parent, name FROM caddy_certmagic_objects ORDER BY parent, name"
 
 			var err error
 			rows, err = s.pool.Query(ctx, query)
@@ -302,11 +285,11 @@ func (s *PostgresStorage) List(ctx context.Context, path string, recursive bool)
 			defer rows.Close()
 		} else {
 			// Query for all entries where parent equals path OR parent starts with path + "/"
-			var query = fmt.Sprintf(`
-				SELECT parent, name FROM %s
+			query := `
+				SELECT parent, name FROM caddy_certmagic_objects
 				WHERE parent = $1 OR parent LIKE $2
 				ORDER BY parent, name
-			`, s.ObjectsTable)
+			`
 
 			var err error
 			rows, err = s.pool.Query(ctx, query, path, path+"/%")
@@ -316,10 +299,7 @@ func (s *PostgresStorage) List(ctx context.Context, path string, recursive bool)
 			defer rows.Close()
 		}
 	} else {
-		var query = fmt.Sprintf(
-			`SELECT parent, name FROM %s WHERE parent = $1 ORDER BY parent, name`,
-			s.ObjectsTable,
-		)
+		query := "SELECT parent, name FROM caddy_certmagic_objects WHERE parent = $1 ORDER BY parent, name"
 
 		var err error
 		rows, err = s.pool.Query(ctx, query, path)
@@ -350,10 +330,7 @@ func (s *PostgresStorage) List(ctx context.Context, path string, recursive bool)
 func (s *PostgresStorage) Stat(ctx context.Context, key string) (certmagic.KeyInfo, error) {
 	parent, name := splitKey(key)
 
-	var query = fmt.Sprintf(
-		`SELECT octet_length(value), modified, is_file FROM %s WHERE parent = $1 AND name = $2`,
-		s.ObjectsTable,
-	)
+	query := "SELECT octet_length(value), modified, is_file FROM caddy_certmagic_objects WHERE parent = $1 AND name = $2"
 
 	var size int64
 	var mod time.Time

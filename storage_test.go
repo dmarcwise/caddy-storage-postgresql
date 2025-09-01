@@ -26,13 +26,13 @@ func createStorage(t *testing.T) *PostgresStorage {
 	}
 
 	// Start clean: empty the objects table
-	_, err := s.pool.Exec(context.Background(), "DELETE FROM "+s.ObjectsTable)
+	_, err := s.pool.Exec(context.Background(), "DELETE FROM caddy_certmagic_objects")
 	if err != nil {
 		t.Errorf("objects cleanup failed: %v", err)
 	}
 
 	// And the locks table
-	_, err = s.pool.Exec(context.Background(), "DELETE FROM "+s.LocksTable)
+	_, err = s.pool.Exec(context.Background(), "DELETE FROM caddy_locks")
 	if err != nil {
 		t.Errorf("locks cleanup failed: %v", err)
 	}
