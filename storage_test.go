@@ -469,3 +469,16 @@ func Test_List_Recursive(t *testing.T) {
 
 	assert.ElementsMatch(t, expectedKeys, entries)
 }
+
+func Test_List_NonExistent(t *testing.T) {
+	s := createStorage(t)
+	ctx := t.Context()
+
+	entries, err := s.List(ctx, "no/such/dir", false)
+	assert.NoError(t, err)
+	assert.Empty(t, entries)
+
+	entries, err = s.List(ctx, "no/such/dir", true)
+	assert.NoError(t, err)
+	assert.Empty(t, entries)
+}
