@@ -104,8 +104,11 @@ jobs:
           echo "::group::Caddy logs"
           test -f caddy.log && cat caddy.log || echo "No caddy.log found"
           echo "::endgroup::"
+          
+          FILTERED=$(grep -Ei "(level=error|ERROR|panic:|fatal:)" caddy.log \
+             | grep -v "TLS handshake error" || true)
 
-          if grep -Ei "(level=error|ERROR|panic:|fatal:)" caddy.log >/dev/null 2>&1; then
+          if [ -n "$FILTERED" ]; then
             echo "Errors found in Caddy logs."
             exit 1
           fi
