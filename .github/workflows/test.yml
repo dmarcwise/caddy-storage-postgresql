@@ -137,5 +137,5 @@ jobs:
           echo "::endgroup::"
           
           # Check that the two are identical
-          diff <(echo "$EXPECTED_KEYS" | sort) <(sort actual_keys.txt)
+          diff <(echo "$EXPECTED_KEYS" | sed '/^$/d' | sort) <(sort actual_keys.txt)
           echo "✅ Tar contents match expected keys."
