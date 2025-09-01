@@ -245,7 +245,7 @@ func (s *PostgresStorage) Delete(ctx context.Context, key string) error {
 	query := `DELETE FROM caddy_certmagic_objects
 		WHERE (parent = $1 AND name = $2)
 		OR parent = $3
-		OR parent LIKE $3 || '/%%'
+		OR parent LIKE $3 || '/%'
 	`
 
 	_, err := s.pool.Exec(ctx, query, parent, name, key)
