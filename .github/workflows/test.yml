@@ -82,7 +82,7 @@ jobs:
           echo "CADDY_PID=$CADDY_PID" >> "$GITHUB_ENV"
 
           # Wait for the test domain to be ready on 443
-          for i in {1..15}; do
+          for i in {1..10}; do
             if curl -fsS --connect-timeout 1 --max-time 2 https://test.localhost/health >/dev/null 2>&1; then
               echo "Caddy is up."
               exit 0
@@ -109,3 +109,33 @@ jobs:
             echo "Errors found in Caddy logs."
             exit 1
           fi
+      - name: Export Caddy storage to tar
+        run: |
+          set -euo pipefail
+          ./caddy storage export --config .github/workflows/Caddyfile --output out.tar
+      - name: Assert keys in tar
+        env:
+          EXPECTED_KEYS: |
+            last_clean.json
+            certificates/local/test.localhost/test.localhost.crt
+            certificates/local/test.localhost/test.localhost.json
+            certificates/local/test.localhost/test.localhost.key
+            pki/authorities/local/intermediate.crt
+            pki/authorities/local/intermediate.key
+            pki/authorities/local/root.crt
+            pki/authorities/local/root.key
+        run: |
+          set -euo pipefail
+          tar -tf out.tar > actual_keys.txt
+          
+          echo "::group::Actual keys in tar"
+          cat actual_keys.txt
+          echo "::endgroup::"
+          
+          echo "::group::Expected keys"
+          echo "$EXPECTED_KEYS"
+          echo "::endgroup::"
+          
+          # Check that the two are identical
+          diff <(echo "$EXPECTED_KEYS" | sort) <(sort actual_keys.txt)
+          echo "✅ Tar contents match expected keys."
