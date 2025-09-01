@@ -233,6 +233,35 @@ func Test_Stat_Simple(t *testing.T) {
 	assert.True(t, info.IsTerminal)
 }
 
+func Test_Stat_Directory(t *testing.T) {
+	s := createStorage(t)
+	ctx := t.Context()
+
+	key := "a/b/c/file.txt"
+	value := []byte("hello world")
+
+	err := s.Store(ctx, key, value)
+	assert.NoError(t, err)
+
+	dir := "a/b/c"
+	info, err := s.Stat(ctx, dir)
+	assert.NoError(t, err)
+	assert.Equal(t, dir, info.Key)
+	assert.Equal(t, int64(0), info.Size)
+	assert.WithinDuration(t, time.Now(), info.Modified, time.Second)
+	assert.False(t, info.IsTerminal)
+}
+
+func Test_Stat_NonExistent(t *testing.T) {
+	s := createStorage(t)
+	ctx := t.Context()
+
+	key := "no/such/file.txt"
+
+	_, err := s.Stat(ctx, key)
+	assert.ErrorIs(t, err, fs.ErrNotExist)
+}
+
 func Test_Delete_Simple(t *testing.T) {
 	s := createStorage(t)
 	ctx := t.Context()

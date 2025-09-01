@@ -330,7 +330,11 @@ func (s *PostgresStorage) List(ctx context.Context, path string, recursive bool)
 func (s *PostgresStorage) Stat(ctx context.Context, key string) (certmagic.KeyInfo, error) {
 	parent, name := splitKey(key)
 
-	query := "SELECT octet_length(value), modified, is_file FROM caddy_certmagic_objects WHERE parent = $1 AND name = $2"
+	query := `
+		SELECT CASE WHEN is_file THEN octet_length(value) ELSE 0 END, modified, is_file
+		FROM caddy_certmagic_objects
+		WHERE parent = $1 AND name = $2
+	`
 
 	var size int64
 	var mod time.Time
