@@ -36,4 +36,6 @@ jobs:
       - name: Build
         run: go build ./...
       - name: Run tests
+        env:
+          TESTS_CONNECTION_STRING: postgres://postgres:@localhost:5432/postgres
         run: go test
