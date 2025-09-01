@@ -126,8 +126,8 @@ func (s *PostgresStorage) ensureTableExists(ctx context.Context) error {
 	}
 
 	createIndexQuery := `
-		CREATE INDEX IF NOT EXISTS caddy_certmagic_objects_parent_idx
-		ON caddy_certmagic_objects (parent)
+		CREATE INDEX IF NOT EXISTS caddy_certmagic_objects_parent_like_idx
+		ON caddy_certmagic_objects (parent text_pattern_ops)
 	`
 
 	_, err = s.pool.Exec(ctx, createIndexQuery)
