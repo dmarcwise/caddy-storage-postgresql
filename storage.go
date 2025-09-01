@@ -31,6 +31,7 @@ type PostgresStorage struct {
 
 	ConnectionString string `json:"connection_string,omitempty"`
 	InstanceId       string `json:"instance_id,omitempty"`
+	Debug            bool   `json:"debug,omitempty"`
 }
 
 func (s *PostgresStorage) CertMagicStorage() (certmagic.Storage, error) {
@@ -82,7 +83,7 @@ func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 		stdlib.OpenDBFromPool(s.pool),
 		pglock.WithCustomTable("caddy_locks"),
 		pglock.WithOwner(s.InstanceId),
-		// TODO: add the other pglock options
+		pglock.WithLevelLogger(pglockLogger{isEnabled: s.Debug, logger: s.logger}),
 	)
 
 	if err != nil {
@@ -102,6 +103,23 @@ func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 	}
 
 	return nil
+}
+
+type pglockLogger struct {
+	isEnabled bool
+	logger    *zap.Logger
+}
+
+func (l pglockLogger) Debug(msg string, args ...any) {
+	if l.logger != nil && l.isEnabled {
+		l.logger.Debug(fmt.Sprintf(msg, args...))
+	}
+}
+
+func (l pglockLogger) Error(msg string, args ...any) {
+	if l.logger != nil && l.isEnabled {
+		l.logger.Error(fmt.Sprintf(msg, args...))
+	}
 }
 
 func (s *PostgresStorage) ensureTableExists(ctx context.Context) error {

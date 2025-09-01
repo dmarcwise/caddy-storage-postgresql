@@ -1,6 +1,7 @@
 {
   storage postgresql {
     connection_string "postgres://postgres:@localhost:5432/postgres"
+    debug
   }
 }
 

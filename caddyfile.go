@@ -1,6 +1,8 @@
 package caddypostgresql
 
-import "github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+import (
+	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+)
 
 func (s *PostgresStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
@@ -17,6 +19,11 @@ func (s *PostgresStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			s.ConnectionString = value
 		case "instance_id":
 			s.InstanceId = value
+		case "debug":
+			if d.NextArg() {
+				return d.ArgErr()
+			}
+			s.Debug = true
 		default:
 			return d.ArgErr()
 		}
