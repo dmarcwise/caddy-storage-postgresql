@@ -1,0 +1,11 @@
+{
+  storage postgresql {
+    connection_string "postgres://postgres:@localhost:5432/postgres"
+  }
+}
+
+test.localhost {
+  respond /health 200 {
+    body "ok"
+  }
+}
