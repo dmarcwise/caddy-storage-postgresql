@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"strings"
 	"sync"
+	"time"
 
 	"cirello.io/pglock"
 	"github.com/caddyserver/caddy/v2"
@@ -113,14 +115,31 @@ func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 }
 
 func (s *PostgresStorage) ensureTableExists(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, fmt.Sprintf(`
+	createQuery := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
-			key TEXT PRIMARY KEY,
-			value BYTEA,
-			modified TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+			parent    text    NOT NULL,
+			name      text    NOT NULL,
+			is_file   boolean NOT NULL,
+			value     bytea,
+			modified  timestamptz NOT NULL DEFAULT now(),
+			PRIMARY KEY (parent, name),
+		    CONSTRAINT %s CHECK (
+				(is_file = true AND value IS NOT NULL) OR
+				(is_file = false AND value IS NULL)
+			)
 		)
-	`, s.ObjectsTable))
+	`, s.ObjectsTable, s.ObjectsTable+"_chk")
 
+	_, err := s.pool.Exec(ctx, createQuery)
+	if err != nil {
+		return err
+	}
+
+	createIndexQuery := fmt.Sprintf(`
+		CREATE INDEX IF NOT EXISTS %s_parent_idx ON %s (parent)
+	`, s.ObjectsTable, s.ObjectsTable)
+
+	_, err = s.pool.Exec(ctx, createIndexQuery)
 	return err
 }
 
@@ -151,27 +170,77 @@ func (s *PostgresStorage) Unlock(ctx context.Context, name string) error {
 }
 
 func (s *PostgresStorage) Store(ctx context.Context, key string, value []byte) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO certmagic_data (key, value)
-		VALUES ($1, $2)
-		ON CONFLICT (key) DO UPDATE
-		SET value = EXCLUDED.value, modified = CURRENT_TIMESTAMP
-	`, key, value)
+	parent, name := splitKey(key)
 
-	return err
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// TODO: disallow converting a directory to a file and vice versa?
+
+	// Ensure records for the directories exist.
+	// For example, a parent of "a/b/c" should create:
+	// | parent | name | is_file | value | modified |
+	// |--------|------|---------|-------|----------|
+	// | ""     | "a"  | false   | NULL  | now()    |
+	// | "a"    | "b"  | false   | NULL  | now()    |
+	// | "a/b"  | "c"  | false   | NULL  | now()    |
+	// if they do not already exist.
+	if parent != "" {
+		parts := strings.Split(parent, "/")
+		curParent := ""
+		for _, part := range parts {
+			var insertQuery = fmt.Sprintf(`
+				INSERT INTO %s (parent, name, is_file, value)
+				VALUES ($1, $2, false, NULL)
+				ON CONFLICT (parent, name) DO NOTHING
+			`, s.ObjectsTable)
+
+			if _, err := tx.Exec(ctx, insertQuery, curParent, part); err != nil {
+				return err
+			}
+
+			curParent = join(curParent, part)
+		}
+	}
+
+	// Upsert the file row.
+	// For example, for a key of "a/b/c/d.txt", this will create or update:
+	// | parent | name   | is_file | value  | modified |
+	// |--------|--------|---------|--------|----------|
+	// | "a/b/c"| "d.txt"| true    | <data> | now()    |
+	var upsertQuery = fmt.Sprintf(`
+		INSERT INTO %s (parent, name, is_file, value, modified)
+		VALUES ($1, $2, true, $3, now())
+		ON CONFLICT (parent, name)
+		DO UPDATE SET is_file = EXCLUDED.is_file,
+		              value = EXCLUDED.value,
+		              modified = now()
+	`, s.ObjectsTable)
+
+	if _, err := tx.Exec(ctx, upsertQuery, parent, name, value); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
 }
 
 func (s *PostgresStorage) Load(ctx context.Context, key string) ([]byte, error) {
+	parent, name := splitKey(key)
+
+	var query = fmt.Sprintf(
+		`SELECT value FROM %s WHERE parent = $1 AND name = $2 AND is_file = true`,
+		s.ObjectsTable,
+	)
+
 	var value []byte
-	err := s.pool.QueryRow(ctx, `
-		SELECT value FROM certmagic_data WHERE key = $1
-	`, key).Scan(&value)
-
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, fs.ErrNotExist
-	}
-
-	if err != nil {
+	if err := s.pool.QueryRow(ctx, query, parent, name).Scan(&value); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fs.ErrNotExist
+		}
 		return nil, err
 	}
 
@@ -179,58 +248,130 @@ func (s *PostgresStorage) Load(ctx context.Context, key string) ([]byte, error) 
 }
 
 func (s *PostgresStorage) Delete(ctx context.Context, key string) error {
-	// TODO: should delete all keys in directory
-	cmd, err := s.pool.Exec(ctx, `
-		DELETE FROM certmagic_data WHERE key = $1
-	`, key)
+	parent, name := splitKey(key)
 
+	// Delete the key and all the descendants
+	query := fmt.Sprintf(`DELETE FROM %s
+			WHERE (parent = $1 AND name = $2)
+			OR parent = $3
+			OR parent LIKE $3 || '/%%'
+		`,
+		s.ObjectsTable,
+	)
+
+	_, err := s.pool.Exec(ctx, query, parent, name, key)
 	if err != nil {
 		return err
-	}
-
-	if cmd.RowsAffected() == 0 {
-		return fs.ErrNotExist
 	}
 
 	return nil
 }
 
 func (s *PostgresStorage) Exists(ctx context.Context, key string) bool {
-	var exists bool
-	err := s.pool.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM certmagic_data WHERE key = $1)
-	`, key).Scan(&exists)
+	parent, name := splitKey(key)
 
-	return err == nil && exists
+	var query = fmt.Sprintf(
+		`SELECT EXISTS (SELECT 1 FROM %s WHERE parent = $1 AND name = $2)`,
+		s.ObjectsTable,
+	)
+
+	var ok bool
+	if err := s.pool.QueryRow(ctx, query, parent, name).Scan(&ok); err != nil {
+		return false
+	}
+
+	return ok
 }
 
 func (s *PostgresStorage) List(ctx context.Context, path string, recursive bool) ([]string, error) {
-	return []string{}, nil
+	var rows pgx.Rows
 
-	// TODO: implement me
+	if recursive {
+		if path == "" {
+			// Query for all entries
+			var query = fmt.Sprintf(`
+				SELECT parent, name FROM %s
+				ORDER BY parent, name
+			`, s.ObjectsTable)
+
+			var err error
+			rows, err = s.pool.Query(ctx, query)
+			if err != nil {
+				return nil, err
+			}
+			defer rows.Close()
+		} else {
+			// Query for all entries where parent equals path OR parent starts with path + "/"
+			var query = fmt.Sprintf(`
+				SELECT parent, name FROM %s
+				WHERE parent = $1 OR parent LIKE $2
+				ORDER BY parent, name
+			`, s.ObjectsTable)
+
+			var err error
+			rows, err = s.pool.Query(ctx, query, path, path+"/%")
+			if err != nil {
+				return nil, err
+			}
+			defer rows.Close()
+		}
+	} else {
+		var query = fmt.Sprintf(
+			`SELECT parent, name FROM %s WHERE parent = $1 ORDER BY parent, name`,
+			s.ObjectsTable,
+		)
+
+		var err error
+		rows, err = s.pool.Query(ctx, query, path)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+	}
+
+	var results []string
+	for rows.Next() {
+		var parent, name string
+		if err := rows.Scan(&parent, &name); err != nil {
+			return nil, err
+		}
+
+		fullPath := join(parent, name)
+		results = append(results, fullPath)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return results, nil
 }
 
 func (s *PostgresStorage) Stat(ctx context.Context, key string) (certmagic.KeyInfo, error) {
-	var info certmagic.KeyInfo
+	parent, name := splitKey(key)
 
-	err := s.pool.QueryRow(ctx, `
-		SELECT octet_length(value), modified
-		FROM certmagic_data
-		WHERE key = $1
-	`, key).Scan(&info.Size, &info.Modified)
+	var query = fmt.Sprintf(
+		`SELECT octet_length(value), modified, is_file FROM %s WHERE parent = $1 AND name = $2`,
+		s.ObjectsTable,
+	)
 
-	if errors.Is(err, pgx.ErrNoRows) {
-		return certmagic.KeyInfo{}, fs.ErrNotExist
-	}
+	var size int64
+	var mod time.Time
+	var isFile bool
+	if err := s.pool.QueryRow(ctx, query, parent, name).Scan(&size, &mod, &isFile); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return certmagic.KeyInfo{}, fs.ErrNotExist
+		}
 
-	if err != nil {
 		return certmagic.KeyInfo{}, err
 	}
 
-	info.Key = key
-	info.IsTerminal = true
-
-	return info, nil
+	return certmagic.KeyInfo{
+		Key:        key,
+		Modified:   mod,
+		Size:       size,
+		IsTerminal: isFile,
+	}, nil
 }
 
 func (s *PostgresStorage) Cleanup() error {

@@ -3,12 +3,14 @@ package caddypostgresql
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"testing"
 	"time"
 
 	"cirello.io/pglock"
 	"github.com/caddyserver/caddy/v2"
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 )
 
 func createStorage(t *testing.T) *PostgresStorage {
@@ -23,7 +25,21 @@ func createStorage(t *testing.T) *PostgresStorage {
 		t.Fatalf("PostgreSQL unavailable or misconfigured: %v", err)
 	}
 
-	t.Cleanup(func() { _ = s.Cleanup() })
+	// Start clean: empty the objects table
+	_, err := s.pool.Exec(context.Background(), "DELETE FROM "+s.ObjectsTable)
+	if err != nil {
+		t.Errorf("objects cleanup failed: %v", err)
+	}
+
+	// And the locks table
+	_, err = s.pool.Exec(context.Background(), "DELETE FROM "+s.LocksTable)
+	if err != nil {
+		t.Errorf("locks cleanup failed: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_ = s.Cleanup()
+	})
 
 	return s
 }
@@ -35,13 +51,11 @@ func Test_Lock_DifferentNamesDoNotBlock(t *testing.T) {
 	nameA := t.Name() + ":a"
 	nameB := t.Name() + ":b"
 
-	if err := s.Lock(ctx, nameA); err != nil {
-		t.Fatalf("lock A failed: %v", err)
-	}
+	err := s.Lock(ctx, nameA)
+	assert.NoErrorf(t, err, "lock A failed")
 
-	if err := s.Lock(ctx, nameB); err != nil {
-		t.Fatalf("lock B failed: %v", err)
-	}
+	err = s.Lock(ctx, nameB)
+	assert.NoErrorf(t, err, "lock B failed")
 }
 
 func Test_Lock_CrossClientBlocking(t *testing.T) {
@@ -50,9 +64,8 @@ func Test_Lock_CrossClientBlocking(t *testing.T) {
 	ctx := t.Context()
 	name := t.Name()
 
-	if err := s1.Lock(ctx, name); err != nil {
-		t.Fatalf("s1 first lock failed: %v", err)
-	}
+	err := s1.Lock(ctx, name)
+	assert.NoErrorf(t, err, "s1 first lock failed")
 
 	// s2 should not be able to acquire within a short timeout while s1 holds it
 	errCh := make(chan error, 1)
@@ -66,15 +79,13 @@ func Test_Lock_CrossClientBlocking(t *testing.T) {
 	}
 
 	// After releasing on s1, s2 should be able to acquire.
-	if err := s1.Unlock(ctx, name); err != nil {
-		t.Fatalf("s1 unlock failed: %v", err)
-	}
+	err = s1.Unlock(ctx, name)
+	assert.NoErrorf(t, err, "s1 unlock failed")
 
 	wctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	if err := s2.Lock(wctx, name); err != nil {
-		t.Fatalf("s2 lock after release failed: %v", err)
-	}
+	err = s2.Lock(wctx, name)
+	assert.NoErrorf(t, err, "s2 lock after release failed")
 }
 
 func Test_UnlockWithoutPriorLock(t *testing.T) {
@@ -82,9 +93,8 @@ func Test_UnlockWithoutPriorLock(t *testing.T) {
 	ctx := t.Context()
 	name := t.Name()
 
-	if err := s.Unlock(ctx, name); err == nil {
-		t.Fatalf("expected error on unlock without prior lock")
-	}
+	err := s.Unlock(ctx, name)
+	assert.Errorf(t, err, "expected error on unlock without prior lock")
 }
 
 func Test_Lock_ContextCanceled(t *testing.T) {
@@ -96,4 +106,337 @@ func Test_Lock_ContextCanceled(t *testing.T) {
 	if err := s.Lock(cctx, name); !errors.Is(err, pglock.ErrNotAcquired) {
 		t.Fatalf("expected context cancellation error; got %v", err)
 	}
+}
+
+func Test_Store_Simple(t *testing.T) {
+	s := createStorage(t)
+	ctx := t.Context()
+
+	key := "file.txt"
+	value := []byte("hello world")
+
+	err := s.Store(ctx, key, value)
+	assert.NoError(t, err)
+}
+
+func Test_Store_NestedDirectories(t *testing.T) {
+	s := createStorage(t)
+	ctx := t.Context()
+
+	key := "a/b/c/file.txt"
+	value := []byte("hello world")
+
+	err := s.Store(ctx, key, value)
+	assert.NoError(t, err)
+}
+
+func Test_Exists_Simple(t *testing.T) {
+	s := createStorage(t)
+	ctx := t.Context()
+
+	key := "file.txt"
+	value := []byte("hello world")
+
+	exists := s.Exists(ctx, key)
+	assert.False(t, exists)
+
+	err := s.Store(ctx, key, value)
+	assert.NoError(t, err)
+
+	exists = s.Exists(ctx, key)
+	assert.True(t, exists)
+}
+
+func Test_Exists_Directory(t *testing.T) {
+	s := createStorage(t)
+	ctx := t.Context()
+
+	key := "a/b/c/file.txt"
+	value := []byte("hello world")
+	dir := "a/b/c"
+
+	// Directory doesn't exist yet
+	exists := s.Exists(ctx, dir)
+	assert.False(t, exists)
+
+	// File doesn't exist yet
+	exists = s.Exists(ctx, key)
+	assert.False(t, exists)
+
+	err := s.Store(ctx, key, value)
+	assert.NoError(t, err)
+
+	// Now both should exist
+	exists = s.Exists(ctx, key)
+	assert.True(t, exists)
+
+	exists = s.Exists(ctx, dir)
+	assert.True(t, exists)
+}
+
+func Test_Load_Simple(t *testing.T) {
+	s := createStorage(t)
+	ctx := t.Context()
+
+	key := "file.txt"
+	value := []byte("hello world")
+
+	err := s.Store(ctx, key, value)
+	assert.NoError(t, err)
+
+	loaded, err := s.Load(ctx, key)
+	assert.NoError(t, err)
+	assert.Equal(t, value, loaded)
+}
+
+func Test_Load_Directory(t *testing.T) {
+	s := createStorage(t)
+	ctx := t.Context()
+
+	key := "a/b/c/file.txt"
+	value := []byte("hello world")
+
+	err := s.Store(ctx, key, value)
+	assert.NoError(t, err)
+
+	loaded, err := s.Load(ctx, key)
+	assert.NoError(t, err)
+	assert.Equal(t, value, loaded)
+}
+
+func Test_Load_NonExistent(t *testing.T) {
+	s := createStorage(t)
+	ctx := t.Context()
+
+	key := "no/such/file.txt"
+
+	loaded, err := s.Load(ctx, key)
+	assert.ErrorIs(t, err, fs.ErrNotExist)
+	assert.Nil(t, loaded)
+}
+
+func Test_Stat_Simple(t *testing.T) {
+	s := createStorage(t)
+	ctx := t.Context()
+
+	key := "file.txt"
+	value := []byte("hello world")
+
+	err := s.Store(ctx, key, value)
+	assert.NoError(t, err)
+
+	info, err := s.Stat(ctx, key)
+	assert.NoError(t, err)
+	assert.Equal(t, key, info.Key)
+	assert.Equal(t, int64(11), info.Size)
+	assert.WithinDuration(t, time.Now(), info.Modified, time.Second)
+	assert.True(t, info.IsTerminal)
+}
+
+func Test_Delete_Simple(t *testing.T) {
+	s := createStorage(t)
+	ctx := t.Context()
+
+	key := "file.txt"
+	value := []byte("hello world")
+
+	err := s.Store(ctx, key, value)
+	assert.NoError(t, err)
+
+	err = s.Delete(ctx, key)
+	assert.NoError(t, err)
+
+	exists := s.Exists(ctx, key)
+	assert.False(t, exists)
+}
+
+func Test_Delete_Directory(t *testing.T) {
+	s := createStorage(t)
+	ctx := t.Context()
+
+	key := "a/b/c/file.txt"
+	value := []byte("hello world")
+
+	err := s.Store(ctx, key, value)
+	assert.NoError(t, err)
+
+	key = "a/b/c/d/file2.txt"
+	value = []byte("hello world 2")
+
+	err = s.Store(ctx, key, value)
+	assert.NoError(t, err)
+
+	// Delete the directory
+	dir := "a/b/c"
+	err = s.Delete(ctx, dir)
+	assert.NoError(t, err)
+
+	// Both should be gone
+	exists := s.Exists(ctx, key)
+	assert.False(t, exists)
+	exists = s.Exists(ctx, dir)
+	assert.False(t, exists)
+}
+
+func Test_Delete_NonExistent(t *testing.T) {
+	s := createStorage(t)
+	ctx := t.Context()
+
+	key := "no/such/file.txt"
+
+	err := s.Delete(ctx, key)
+	assert.NoError(t, err)
+}
+
+func Test_List_NonRecursive_Root(t *testing.T) {
+	s := createStorage(t)
+	ctx := t.Context()
+
+	// Set up a structure:
+	// a/b/c/file1.txt
+	// a/b/c/file2.txt
+	// a/b/file3.txt
+	// a/file4.txt
+	// file5.txt
+
+	err := s.Store(ctx, "a/b/c/file1.txt", []byte("data1"))
+	assert.NoError(t, err)
+	err = s.Store(ctx, "a/b/c/file2.txt", []byte("data2"))
+	assert.NoError(t, err)
+	err = s.Store(ctx, "a/b/file3.txt", []byte("data3"))
+	assert.NoError(t, err)
+	err = s.Store(ctx, "a/file4.txt", []byte("data4"))
+	assert.NoError(t, err)
+	err = s.Store(ctx, "file5.txt", []byte("data5"))
+	assert.NoError(t, err)
+
+	entries, err := s.List(ctx, "", false)
+	assert.NoError(t, err)
+
+	expectedKeys := []string{
+		"a",
+		"file5.txt",
+	}
+
+	assert.ElementsMatch(t, expectedKeys, entries)
+}
+
+func Test_List_NonRecursive(t *testing.T) {
+	s := createStorage(t)
+	ctx := t.Context()
+
+	// Set up a structure:
+	// a/b/c/file1.txt
+	// a/b/c/file2.txt
+	// a/b/file3.txt
+	// a/file4.txt
+	// file5.txt
+
+	err := s.Store(ctx, "a/b/c/file1.txt", []byte("data1"))
+	assert.NoError(t, err)
+	err = s.Store(ctx, "a/b/c/file2.txt", []byte("data2"))
+	assert.NoError(t, err)
+	err = s.Store(ctx, "a/b/file3.txt", []byte("data3"))
+	assert.NoError(t, err)
+	err = s.Store(ctx, "a/file4.txt", []byte("data4"))
+	assert.NoError(t, err)
+	err = s.Store(ctx, "file5.txt", []byte("data5"))
+	assert.NoError(t, err)
+
+	entries, err := s.List(ctx, "a/b", false)
+	assert.NoError(t, err)
+
+	expectedKeys := []string{
+		"a/b/file3.txt",
+		"a/b/c",
+	}
+
+	assert.ElementsMatch(t, expectedKeys, entries)
+}
+
+func Test_List_Recursive_Root(t *testing.T) {
+	s := createStorage(t)
+	ctx := t.Context()
+
+	// Set up a structure:
+	// a/b/c/file1.txt
+	// a/b/c/file2.txt
+	// a/b/file3.txt
+	// a/file4.txt
+	// file5.txt
+
+	err := s.Store(ctx, "a/b/c/file1.txt", []byte("data1"))
+	assert.NoError(t, err)
+	err = s.Store(ctx, "a/b/c/file2.txt", []byte("data2"))
+	assert.NoError(t, err)
+	err = s.Store(ctx, "a/b/file3.txt", []byte("data3"))
+	assert.NoError(t, err)
+	err = s.Store(ctx, "a/file4.txt", []byte("data4"))
+	assert.NoError(t, err)
+	err = s.Store(ctx, "file5.txt", []byte("data5"))
+	assert.NoError(t, err)
+
+	entries, err := s.List(ctx, "", true)
+	assert.NoError(t, err)
+
+	expectedKeys := []string{
+		"a",
+		"a/b",
+		"a/b/c",
+		"a/b/c/file1.txt",
+		"a/b/c/file2.txt",
+		"a/b/file3.txt",
+		"a/file4.txt",
+		"file5.txt",
+	}
+
+	assert.ElementsMatch(t, expectedKeys, entries)
+}
+
+func Test_List_Recursive(t *testing.T) {
+	s := createStorage(t)
+	ctx := t.Context()
+
+	// Set up a structure:
+	// a/b/c/file1.txt
+	// a/b/c/file2.txt
+	// a/b/file3.txt
+	// a/file4.txt
+	// file5.txt
+
+	err := s.Store(ctx, "a/b/c/file1.txt", []byte("data1"))
+	assert.NoError(t, err)
+	err = s.Store(ctx, "a/b/c/file2.txt", []byte("data2"))
+	assert.NoError(t, err)
+	err = s.Store(ctx, "a/b/file3.txt", []byte("data3"))
+	assert.NoError(t, err)
+	err = s.Store(ctx, "a/file4.txt", []byte("data4"))
+	assert.NoError(t, err)
+	err = s.Store(ctx, "file5.txt", []byte("data5"))
+	assert.NoError(t, err)
+
+	entries, err := s.List(ctx, "a", true)
+	assert.NoError(t, err)
+
+	expectedKeys := []string{
+		"a/b",
+		"a/b/c",
+		"a/b/c/file1.txt",
+		"a/b/c/file2.txt",
+		"a/b/file3.txt",
+		"a/file4.txt",
+	}
+	assert.ElementsMatch(t, expectedKeys, entries)
+
+	entries, err = s.List(ctx, "a/b", true)
+	assert.NoError(t, err)
+
+	expectedKeys = []string{
+		"a/b/c",
+		"a/b/c/file1.txt",
+		"a/b/c/file2.txt",
+		"a/b/file3.txt",
+	}
+
+	assert.ElementsMatch(t, expectedKeys, entries)
 }
