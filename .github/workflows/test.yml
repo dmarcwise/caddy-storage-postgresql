@@ -65,7 +65,7 @@ jobs:
       - name: Install dependencies
         run: go mod download
       - name: Install xcaddy
-        run: go install github.com/xcaddy/xcaddy/cmd/xcaddy@latest
+        run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
       - name: Build Caddy with xcaddy
         run: |
           set -euo pipefail
