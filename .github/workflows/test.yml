@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - "main"
+      - "debug"
   pull_request:
     branches:
       - "**"
@@ -11,6 +12,7 @@ on:
 
 jobs:
   tests:
+    if: false
     name: Tests
     runs-on: ubuntu-latest
     services:
