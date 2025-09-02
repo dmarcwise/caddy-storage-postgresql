@@ -87,7 +87,7 @@ jobs:
           ( for i in {1..30}; do
             echo "----- $(date) -----"
             psql "postgres://postgres:@localhost:5432/postgres" -c "TABLE caddy_locks;" || true
-            sleep 1
+            sleep 0.2
             done ) &
 
           # Wait for the test domain to be ready on 443
