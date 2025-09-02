@@ -68,6 +68,7 @@ func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 	s.pool = pool
 
 	// Initialize pglock
+	s.logger.Debug("initializing pglock...")
 
 	if s.InstanceId == "" {
 		instanceId, err := caddy.InstanceID()
@@ -96,11 +97,17 @@ func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 		return err
 	}
 
+	s.logger.Debug("pglock initialized")
+
+	s.logger.Debug("ensuring caddy_certmagic_objects table exists...")
+
 	// Ensure storage objects table exists
 	if err := s.ensureTableExists(ctx.Context); err != nil {
-		s.logger.Error("could not ensure certmagic_data table exists", zap.Error(err))
+		s.logger.Error("could not ensure caddy_certmagic_objects table exists", zap.Error(err))
 		return err
 	}
+
+	s.logger.Debug("ensured caddy_certmagic_objects table exists")
 
 	return nil
 }
@@ -153,6 +160,8 @@ func (s *PostgresStorage) ensureTableExists(ctx context.Context) error {
 }
 
 func (s *PostgresStorage) Lock(ctx context.Context, name string) error {
+	s.logger.Debug("acquiring lock", zap.String("name", name))
+
 	lock, err := s.pglock.AcquireContext(ctx, name)
 	if err != nil {
 		return fmt.Errorf("could not acquire pglock: %w", err)
@@ -164,6 +173,8 @@ func (s *PostgresStorage) Lock(ctx context.Context, name string) error {
 }
 
 func (s *PostgresStorage) Unlock(ctx context.Context, name string) error {
+	s.logger.Debug("releasing lock", zap.String("name", name))
+
 	v, ok := s.locks.LoadAndDelete(name)
 	if !ok {
 		return fmt.Errorf("unlock without prior lock: %q", name)
@@ -179,6 +190,8 @@ func (s *PostgresStorage) Unlock(ctx context.Context, name string) error {
 }
 
 func (s *PostgresStorage) Store(ctx context.Context, key string, value []byte) error {
+	s.logger.Debug("storing key", zap.String("key", key))
+
 	parent, name := splitKey(key)
 
 	tx, err := s.pool.Begin(ctx)
@@ -202,6 +215,8 @@ func (s *PostgresStorage) Store(ctx context.Context, key string, value []byte) e
 		parts := strings.Split(parent, "/")
 		curParent := ""
 		for _, part := range parts {
+			s.logger.Debug("ensuring directory exists", zap.String("directory", join(curParent, part)))
+
 			var insertQuery = `
 				INSERT INTO caddy_certmagic_objects (parent, name, is_file, value)
 				VALUES ($1, $2, false, NULL)
@@ -221,6 +236,8 @@ func (s *PostgresStorage) Store(ctx context.Context, key string, value []byte) e
 	// | parent | name   | is_file | value  | modified |
 	// |--------|--------|---------|--------|----------|
 	// | "a/b/c"| "d.txt"| true    | <data> | now()    |
+	s.logger.Debug("upserting file", zap.String("file", key))
+
 	var upsertQuery = `
 		INSERT INTO caddy_certmagic_objects (parent, name, is_file, value)
 		VALUES ($1, $2, true, $3)
@@ -238,6 +255,8 @@ func (s *PostgresStorage) Store(ctx context.Context, key string, value []byte) e
 }
 
 func (s *PostgresStorage) Load(ctx context.Context, key string) ([]byte, error) {
+	s.logger.Debug("loading key", zap.String("key", key))
+
 	parent, name := splitKey(key)
 
 	query := `
@@ -257,6 +276,8 @@ func (s *PostgresStorage) Load(ctx context.Context, key string) ([]byte, error) 
 }
 
 func (s *PostgresStorage) Delete(ctx context.Context, key string) error {
+	s.logger.Debug("deleting key", zap.String("key", key))
+
 	parent, name := splitKey(key)
 
 	// Delete the key and all the descendants
@@ -275,6 +296,8 @@ func (s *PostgresStorage) Delete(ctx context.Context, key string) error {
 }
 
 func (s *PostgresStorage) Exists(ctx context.Context, key string) bool {
+	s.logger.Debug("checking existence of key", zap.String("key", key))
+
 	parent, name := splitKey(key)
 
 	query := "SELECT EXISTS (SELECT 1 FROM caddy_certmagic_objects WHERE parent = $1 AND name = $2)"
@@ -288,6 +311,8 @@ func (s *PostgresStorage) Exists(ctx context.Context, key string) bool {
 }
 
 func (s *PostgresStorage) List(ctx context.Context, path string, recursive bool) ([]string, error) {
+	s.logger.Debug("listing keys", zap.String("path", path), zap.Bool("recursive", recursive))
+
 	var rows pgx.Rows
 
 	if recursive {
@@ -346,6 +371,8 @@ func (s *PostgresStorage) List(ctx context.Context, path string, recursive bool)
 }
 
 func (s *PostgresStorage) Stat(ctx context.Context, key string) (certmagic.KeyInfo, error) {
+	s.logger.Debug("gathering stats for key", zap.String("key", key))
+
 	parent, name := splitKey(key)
 
 	query := `
@@ -374,6 +401,8 @@ func (s *PostgresStorage) Stat(ctx context.Context, key string) (certmagic.KeyIn
 }
 
 func (s *PostgresStorage) Cleanup() error {
+	s.logger.Debug("cleanup requested, releasing all locks and closing connections")
+
 	// Release locks and clean locks mapping
 	s.locks.Range(func(key, value any) bool {
 		if lock, ok := value.(*pglock.Lock); ok {
