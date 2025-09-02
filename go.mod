@@ -6,7 +6,6 @@ require (
 	cirello.io/pglock v1.16.1
 	github.com/caddyserver/caddy/v2 v2.10.2
 	github.com/caddyserver/certmagic v0.24.0
-	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.5
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/zap v1.27.0
@@ -18,6 +17,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/francoispqt/gojay v1.2.13 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
