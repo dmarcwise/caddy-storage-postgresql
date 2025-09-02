@@ -128,6 +128,7 @@ func (t tracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.Tr
 }
 
 func (t tracer) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
+	t.logger.Debug("query end", zap.String("commandTag", data.CommandTag.String()), zap.Error(data.Err))
 }
 
 type pglockLogger struct {
