@@ -29,9 +29,8 @@ type PostgresStorage struct {
 	locks  sync.Map // name -> *pglock.Lock
 	pglock *pglock.Client
 
-	ConnectionString string `json:"connection_string,omitempty"`
-	InstanceId       string `json:"instance_id,omitempty"`
-	Debug            bool   `json:"debug,omitempty"`
+	Dsn        string `json:"dsn,omitempty"`
+	DebugLocks bool   `json:"debug_locks,omitempty"`
 }
 
 func (s *PostgresStorage) CertMagicStorage() (certmagic.Storage, error) {
@@ -54,12 +53,12 @@ func NewPostgresStorage() *PostgresStorage {
 func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 	s.logger = ctx.Logger(s)
 
-	if s.ConnectionString == "" {
+	if s.Dsn == "" {
 		return fmt.Errorf("connection_string is required")
 	}
 
 	// Create PostgreSQL connection pool
-	pool, err := pgxpool.New(ctx.Context, s.ConnectionString)
+	pool, err := pgxpool.New(ctx.Context, s.Dsn)
 	if err != nil {
 		s.logger.Error("could not create connection pool", zap.Error(err))
 		return err
@@ -70,21 +69,17 @@ func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 	// Initialize pglock
 	s.logger.Debug("initializing pglock...")
 
-	if s.InstanceId == "" {
-		instanceId, err := caddy.InstanceID()
-		if err != nil {
-			s.logger.Error("could not get caddy instance id", zap.Error(err))
-			return err
-		}
-
-		s.InstanceId = instanceId.String()
+	instanceId, err := caddy.InstanceID()
+	if err != nil {
+		s.logger.Error("could not get caddy instance id", zap.Error(err))
+		return err
 	}
 
 	s.pglock, err = pglock.UnsafeNew(
 		stdlib.OpenDBFromPool(s.pool),
 		pglock.WithCustomTable("caddy_locks"),
-		pglock.WithOwner(s.InstanceId),
-		pglock.WithLevelLogger(pglockLogger{isEnabled: s.Debug, logger: s.logger}),
+		pglock.WithOwner(instanceId.String()),
+		pglock.WithLevelLogger(pglockLogger{isEnabled: s.DebugLocks, logger: s.logger}),
 	)
 
 	if err != nil {

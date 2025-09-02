@@ -10,7 +10,6 @@ import (
 
 	"cirello.io/pglock"
 	"github.com/caddyserver/caddy/v2"
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -19,12 +18,10 @@ func createStorage(t *testing.T) *PostgresStorage {
 
 	s := NewPostgresStorage()
 
-	s.ConnectionString = os.Getenv("TESTS_CONNECTION_STRING")
-	if s.ConnectionString == "" {
-		s.ConnectionString = "postgres://postgres:@localhost:5432/caddy_tests"
+	s.Dsn = os.Getenv("TESTS_CONNECTION_STRING")
+	if s.Dsn == "" {
+		s.Dsn = "postgres://postgres:@localhost:5432/caddy_tests"
 	}
-
-	s.InstanceId = uuid.New().String()
 
 	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
 	if err := s.Provision(ctx); err != nil {
