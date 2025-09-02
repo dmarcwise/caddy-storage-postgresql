@@ -58,7 +58,18 @@ func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 	}
 
 	// Create PostgreSQL connection pool
-	pool, err := pgxpool.New(ctx.Context, s.Dsn)
+	config, err := pgxpool.ParseConfig(s.Dsn)
+
+	if err != nil {
+		s.logger.Error("could not parse connection string", zap.Error(err))
+		return err
+	}
+
+	if s.DebugLocks {
+		config.ConnConfig.Tracer = tracer{logger: s.logger}
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx.Context, config)
 	if err != nil {
 		s.logger.Error("could not create connection pool", zap.Error(err))
 		return err
@@ -105,6 +116,18 @@ func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 	s.logger.Debug("ensured caddy_certmagic_objects table exists")
 
 	return nil
+}
+
+type tracer struct {
+	logger *zap.Logger
+}
+
+func (t tracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	t.logger.Debug("query start", zap.String("sql", data.SQL), zap.Any("args", data.Args))
+	return ctx
+}
+
+func (t tracer) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
 }
 
 type pglockLogger struct {
@@ -154,27 +177,8 @@ func (s *PostgresStorage) ensureTableExists(ctx context.Context) error {
 	return err
 }
 
-func watchCtx(ctx context.Context, kind, name string, log *zap.Logger) {
-	go func() {
-		<-ctx.Done()
-		// Go 1.20+: context.Cause gives you the *reason* (deadline, cancel, or custom)
-		err := context.Cause(ctx)
-		if err == nil {
-			err = ctx.Err()
-		} // fallback
-		if dl, ok := ctx.Deadline(); ok {
-			log.Debug("ctx done", zap.String("kind", kind), zap.String("name", name),
-				zap.Error(err), zap.Time("deadline", dl), zap.Duration("until_deadline", time.Until(dl)))
-		} else {
-			log.Debug("ctx done", zap.String("kind", kind), zap.String("name", name), zap.Error(err))
-		}
-	}()
-}
-
 func (s *PostgresStorage) Lock(ctx context.Context, name string) error {
 	s.logger.Debug("acquiring lock", zap.String("name", name))
-
-	watchCtx(ctx, "acquire", name, s.logger)
 
 	lock, err := s.pglock.AcquireContext(ctx, name)
 	if err != nil {
