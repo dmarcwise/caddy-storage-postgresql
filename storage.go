@@ -123,7 +123,7 @@ type tracer struct {
 }
 
 func (t tracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	t.logger.Debug("query start", zap.String("sql", data.SQL), zap.Any("args", data.Args))
+	t.logger.Debug("query start", zap.String("sql", strings.TrimSpace(data.SQL)), zap.Any("args", data.Args))
 	return ctx
 }
 

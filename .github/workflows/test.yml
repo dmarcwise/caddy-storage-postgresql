@@ -82,13 +82,6 @@ jobs:
           ( sudo ./caddy run --config .github/workflows/Caddyfile 2>&1 | tee caddy.log ) &
           CADDY_PID=$!
           echo "CADDY_PID=$CADDY_PID" >> "$GITHUB_ENV"
-          
-          # Start lock logger
-          ( for i in {1..30}; do
-            echo "----- $(date) -----"
-            psql "postgres://postgres:@localhost:5432/postgres" -c "TABLE caddy_locks;" || true
-            sleep 0.2
-            done ) &
 
           # Wait for the test domain to be ready on 443
           for i in {1..30}; do
