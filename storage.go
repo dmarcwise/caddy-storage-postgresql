@@ -177,7 +177,9 @@ func (s *PostgresStorage) Unlock(ctx context.Context, name string) error {
 
 	lock := v.(*pglock.Lock)
 
-	if err := s.pglock.ReleaseContext(ctx, lock); err != nil {
+	err := s.pglock.ReleaseContext(ctx, lock)
+
+	if err != nil && !errors.Is(err, pglock.ErrLockAlreadyReleased) {
 		return fmt.Errorf("could not release pglock: %w", err)
 	}
 
