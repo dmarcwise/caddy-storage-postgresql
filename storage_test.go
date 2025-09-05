@@ -91,6 +91,21 @@ func Test_Lock_CrossClientBlocking(t *testing.T) {
 	assert.NoErrorf(t, err, "s2 lock after release failed")
 }
 
+func Test_UnlockMultipleTimes(t *testing.T) {
+	s := createStorage(t)
+	ctx := t.Context()
+	name := t.Name()
+
+	err := s.Lock(ctx, name)
+	assert.NoErrorf(t, err, "first lock failed")
+
+	err = s.Unlock(ctx, name)
+	assert.NoErrorf(t, err, "first unlock failed")
+
+	err = s.Unlock(ctx, name)
+	assert.Errorf(t, err, "expected error on second unlock")
+}
+
 func Test_UnlockWithoutPriorLock(t *testing.T) {
 	s := createStorage(t)
 	ctx := t.Context()
