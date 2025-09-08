@@ -1,6 +1,6 @@
 {
   storage postgresql {
-    dsn "postgres://postgres:@localhost:5432/postgres"
+    dsn "postgres://postgres:@localhost:5432/postgres?sslmode=disable"
     debug_locks
   }
   log {
