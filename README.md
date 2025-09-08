@@ -25,11 +25,9 @@ Configure Caddy to use the PostgreSQL storage module. Example `Caddyfile`:
 ```caddy
 {
     storage postgresql {
-        dsn "postgres://user:password@localhost:5432/caddy"
+        dsn "postgres://user:password@localhost:5432/caddy?sslmode=disable"
     }
 }
 ```
 
 The `dsn` parameter is a [PostgreSQL connection string](https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING), either as a key/value string or as a connection URI.
-
-You'll likely want to specify a proper `sslmode` depending on your setup.

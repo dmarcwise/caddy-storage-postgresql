@@ -20,7 +20,7 @@ func createStorage(t *testing.T) *PostgresStorage {
 
 	s.Dsn = os.Getenv("TESTS_CONNECTION_STRING")
 	if s.Dsn == "" {
-		s.Dsn = "postgres://postgres:@localhost:5432/caddy_tests"
+		s.Dsn = "postgres://postgres:@localhost:5432/caddy_tests?sslmode=disable"
 	}
 
 	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
@@ -29,13 +29,13 @@ func createStorage(t *testing.T) *PostgresStorage {
 	}
 
 	// Start clean: empty the objects table
-	_, err := s.pool.Exec(context.Background(), "DELETE FROM caddy_certmagic_objects")
+	_, err := s.db.Exec("DELETE FROM caddy_certmagic_objects")
 	if err != nil {
 		t.Errorf("objects cleanup failed: %v", err)
 	}
 
 	// And the locks table
-	_, err = s.pool.Exec(context.Background(), "DELETE FROM caddy_locks")
+	_, err = s.db.Exec("DELETE FROM caddy_locks")
 	if err != nil {
 		t.Errorf("locks cleanup failed: %v", err)
 	}

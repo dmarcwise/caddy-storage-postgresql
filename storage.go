@@ -2,6 +2,7 @@ package caddypostgresql
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -13,9 +14,7 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/certmagic"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jackc/pgx/v5/stdlib"
+	_ "github.com/lib/pq"
 	"go.uber.org/zap"
 )
 
@@ -25,7 +24,7 @@ func init() {
 
 type PostgresStorage struct {
 	logger *zap.Logger
-	pool   *pgxpool.Pool
+	db     *sql.DB
 	pglock *pglock.Client
 
 	locks  map[string]*pglock.Lock
@@ -70,13 +69,13 @@ func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 	}
 
 	// Create PostgreSQL connection pool
-	pool, err := pgxpool.New(ctx.Context, s.Dsn)
+	db, err := sql.Open("postgres", s.Dsn)
 	if err != nil {
 		s.logger.Error("could not create connection pool", zap.Error(err))
 		return err
 	}
 
-	s.pool = pool
+	s.db = db
 
 	// Initialize pglock
 	s.logger.Debug("initializing pglock...")
@@ -88,7 +87,7 @@ func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 	}
 
 	s.pglock, err = pglock.UnsafeNew(
-		stdlib.OpenDBFromPool(s.pool),
+		s.db,
 		pglock.WithCustomTable("caddy_locks"),
 		pglock.WithOwner(instanceId.String()),
 		pglock.WithLevelLogger(pglockLogger{isEnabled: s.DebugLocks, logger: s.logger}),
@@ -152,7 +151,7 @@ func (s *PostgresStorage) ensureTableExists(ctx context.Context) error {
 		)
 	`
 
-	_, err := s.pool.Exec(ctx, createQuery)
+	_, err := s.db.ExecContext(ctx, createQuery)
 	if err != nil {
 		return err
 	}
@@ -162,7 +161,7 @@ func (s *PostgresStorage) ensureTableExists(ctx context.Context) error {
 		ON caddy_certmagic_objects (parent text_pattern_ops)
 	`
 
-	_, err = s.pool.Exec(ctx, createIndexQuery)
+	_, err = s.db.ExecContext(ctx, createIndexQuery)
 	return err
 }
 
@@ -238,12 +237,12 @@ func (s *PostgresStorage) Store(ctx context.Context, key string, value []byte) e
 
 	parent, name := splitKey(key)
 
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback() }()
 
 	// TODO: disallow converting a directory to a file and vice versa?
 
@@ -267,7 +266,7 @@ func (s *PostgresStorage) Store(ctx context.Context, key string, value []byte) e
 				ON CONFLICT (parent, name) DO NOTHING
 			`
 
-			if _, err := tx.Exec(ctx, insertQuery, curParent, part); err != nil {
+			if _, err := tx.ExecContext(ctx, insertQuery, curParent, part); err != nil {
 				return err
 			}
 
@@ -291,11 +290,11 @@ func (s *PostgresStorage) Store(ctx context.Context, key string, value []byte) e
 		              modified = now()
 	`
 
-	if _, err := tx.Exec(ctx, upsertQuery, parent, name, value); err != nil {
+	if _, err := tx.ExecContext(ctx, upsertQuery, parent, name, value); err != nil {
 		return err
 	}
 
-	return tx.Commit(ctx)
+	return tx.Commit()
 }
 
 func (s *PostgresStorage) Load(ctx context.Context, key string) ([]byte, error) {
@@ -309,8 +308,8 @@ func (s *PostgresStorage) Load(ctx context.Context, key string) ([]byte, error) 
 	`
 
 	var value []byte
-	if err := s.pool.QueryRow(ctx, query, parent, name).Scan(&value); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+	if err := s.db.QueryRowContext(ctx, query, parent, name).Scan(&value); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fs.ErrNotExist
 		}
 		return nil, err
@@ -331,7 +330,7 @@ func (s *PostgresStorage) Delete(ctx context.Context, key string) error {
 		OR parent LIKE $3 || '/%'
 	`
 
-	_, err := s.pool.Exec(ctx, query, parent, name, key)
+	_, err := s.db.ExecContext(ctx, query, parent, name, key)
 	if err != nil {
 		return err
 	}
@@ -347,7 +346,7 @@ func (s *PostgresStorage) Exists(ctx context.Context, key string) bool {
 	query := "SELECT EXISTS (SELECT 1 FROM caddy_certmagic_objects WHERE parent = $1 AND name = $2)"
 
 	var ok bool
-	if err := s.pool.QueryRow(ctx, query, parent, name).Scan(&ok); err != nil {
+	if err := s.db.QueryRowContext(ctx, query, parent, name).Scan(&ok); err != nil {
 		return false
 	}
 
@@ -357,7 +356,7 @@ func (s *PostgresStorage) Exists(ctx context.Context, key string) bool {
 func (s *PostgresStorage) List(ctx context.Context, path string, recursive bool) ([]string, error) {
 	s.logger.Debug("listing keys", zap.String("path", path), zap.Bool("recursive", recursive))
 
-	var rows pgx.Rows
+	var rows *sql.Rows
 
 	if recursive {
 		if path == "" {
@@ -365,7 +364,7 @@ func (s *PostgresStorage) List(ctx context.Context, path string, recursive bool)
 			query := "SELECT parent, name FROM caddy_certmagic_objects ORDER BY parent, name"
 
 			var err error
-			rows, err = s.pool.Query(ctx, query)
+			rows, err = s.db.QueryContext(ctx, query)
 			if err != nil {
 				return nil, err
 			}
@@ -379,7 +378,7 @@ func (s *PostgresStorage) List(ctx context.Context, path string, recursive bool)
 			`
 
 			var err error
-			rows, err = s.pool.Query(ctx, query, path, path+"/%")
+			rows, err = s.db.QueryContext(ctx, query, path, path+"/%")
 			if err != nil {
 				return nil, err
 			}
@@ -389,7 +388,7 @@ func (s *PostgresStorage) List(ctx context.Context, path string, recursive bool)
 		query := "SELECT parent, name FROM caddy_certmagic_objects WHERE parent = $1 ORDER BY parent, name"
 
 		var err error
-		rows, err = s.pool.Query(ctx, query, path)
+		rows, err = s.db.QueryContext(ctx, query, path)
 		if err != nil {
 			return nil, err
 		}
@@ -428,8 +427,8 @@ func (s *PostgresStorage) Stat(ctx context.Context, key string) (certmagic.KeyIn
 	var size int64
 	var mod time.Time
 	var isFile bool
-	if err := s.pool.QueryRow(ctx, query, parent, name).Scan(&size, &mod, &isFile); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+	if err := s.db.QueryRowContext(ctx, query, parent, name).Scan(&size, &mod, &isFile); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			return certmagic.KeyInfo{}, fs.ErrNotExist
 		}
 
@@ -468,8 +467,8 @@ func (s *PostgresStorage) Cleanup() error {
 	}
 
 	// Close all pool connections
-	if s.pool != nil {
-		s.pool.Close()
+	if s.db != nil {
+		s.db.Close()
 	}
 
 	return nil
