@@ -55,8 +55,6 @@ func NewPostgresStorage() *PostgresStorage {
 }
 
 func (s *PostgresStorage) Provision(ctx caddy.Context) error {
-	s.logger = ctx.Logger(s)
-
 	// Initialize locks map if not already initialized
 	s.mutex.Lock()
 	if s.locks == nil {
@@ -64,9 +62,14 @@ func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 	}
 	s.mutex.Unlock()
 
+	s.logger = ctx.Logger(s)
+
 	if s.Dsn == "" {
 		return fmt.Errorf("connection_string is required")
 	}
+
+	// Replace placeholders in DSN
+	s.Dsn = caddy.NewReplacer().ReplaceAll(s.Dsn, "")
 
 	// Create PostgreSQL connection pool
 	db, err := sql.Open("postgres", s.Dsn)
