@@ -26,8 +26,11 @@ func init() {
 type PostgresStorage struct {
 	logger *zap.Logger
 	pool   *pgxpool.Pool
-	locks  sync.Map // name -> *pglock.Lock
 	pglock *pglock.Client
+
+	locks  map[string]*pglock.Lock
+	mutex  sync.Mutex // protects locks map
+	closed bool
 
 	Dsn        string `json:"dsn,omitempty"`
 	DebugLocks bool   `json:"debug_locks,omitempty"`
@@ -47,11 +50,20 @@ func (PostgresStorage) CaddyModule() caddy.ModuleInfo {
 }
 
 func NewPostgresStorage() *PostgresStorage {
-	return &PostgresStorage{}
+	return &PostgresStorage{
+		locks: make(map[string]*pglock.Lock),
+	}
 }
 
 func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 	s.logger = ctx.Logger(s)
+
+	// Initialize locks map if not already initialized
+	s.mutex.Lock()
+	if s.locks == nil {
+		s.locks = make(map[string]*pglock.Lock)
+	}
+	s.mutex.Unlock()
 
 	if s.Dsn == "" {
 		return fmt.Errorf("connection_string is required")
@@ -157,12 +169,38 @@ func (s *PostgresStorage) ensureTableExists(ctx context.Context) error {
 func (s *PostgresStorage) Lock(ctx context.Context, name string) error {
 	s.logger.Debug("acquiring lock", zap.String("name", name))
 
+	s.mutex.Lock()
+
+	// Check if we are closed/closing
+	if s.closed {
+		s.logger.Debug("storage is closed, cannot acquire lock", zap.String("name", name))
+		s.mutex.Unlock()
+		return fmt.Errorf("storage is being cleaned up/has been cleaned up, cannot acquire new locks")
+	}
+
+	s.mutex.Unlock()
+
 	lock, err := s.pglock.AcquireContext(ctx, name)
+
 	if err != nil {
 		return fmt.Errorf("could not acquire pglock: %w", err)
 	}
 
-	s.locks.Store(name, lock)
+	s.mutex.Lock()
+
+	// Double-check we haven't been closed while acquiring the lock
+	if s.closed {
+		s.mutex.Unlock()
+
+		s.logger.Debug("acquired lock, but storage is closed, releasing lock", zap.String("name", name))
+
+		// Release the lock we just acquired since we're shutting down
+		_ = s.pglock.ReleaseContext(ctx, lock)
+		return fmt.Errorf("storage is being cleaned up/has been cleaned up, cannot acquire new locks")
+	}
+
+	s.locks[name] = lock
+	s.mutex.Unlock()
 
 	return nil
 }
@@ -170,12 +208,21 @@ func (s *PostgresStorage) Lock(ctx context.Context, name string) error {
 func (s *PostgresStorage) Unlock(ctx context.Context, name string) error {
 	s.logger.Debug("releasing lock", zap.String("name", name))
 
-	v, ok := s.locks.LoadAndDelete(name)
+	s.mutex.Lock()
+
+	if s.closed {
+		s.mutex.Unlock()
+		// Already unlocked in cleanup
+		return nil
+	}
+
+	lock, ok := s.locks[name]
+	delete(s.locks, name)
+	s.mutex.Unlock()
+
 	if !ok {
 		return fmt.Errorf("unlock without prior lock: %q", name)
 	}
-
-	lock := v.(*pglock.Lock)
 
 	err := s.pglock.ReleaseContext(ctx, lock)
 
@@ -400,14 +447,25 @@ func (s *PostgresStorage) Stat(ctx context.Context, key string) (certmagic.KeyIn
 func (s *PostgresStorage) Cleanup() error {
 	s.logger.Debug("cleanup requested, releasing all locks and closing connections")
 
-	// Release locks and clean locks mapping
-	s.locks.Range(func(key, value any) bool {
-		if lock, ok := value.(*pglock.Lock); ok {
-			_ = lock.Close()
-		}
-		s.locks.Delete(key)
-		return true
-	})
+	s.mutex.Lock()
+	if s.closed {
+		s.mutex.Unlock()
+		s.logger.Debug("cleanup already in progress or completed")
+		return nil
+	}
+
+	s.closed = true
+
+	// Clean locks mapping
+	locks := s.locks
+	s.locks = nil
+
+	s.mutex.Unlock()
+
+	// Release all held locks
+	for _, l := range locks {
+		_ = l.Close()
+	}
 
 	// Close all pool connections
 	if s.pool != nil {
