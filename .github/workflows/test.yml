@@ -38,7 +38,7 @@ jobs:
         run: go build ./...
       - name: Run tests
         env:
-          TESTS_CONNECTION_STRING: postgres://postgres:@localhost:5432/postgres
+          TESTS_CONNECTION_STRING: postgres://postgres:@localhost:5432/postgres?sslmode=disable
         run: go test -v ./...
   smoke-test:
     name: Smoke test + export
