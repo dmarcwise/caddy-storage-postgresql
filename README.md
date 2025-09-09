@@ -11,6 +11,7 @@ A storage implementation for [Caddy](https://caddyserver.com/) that uses Postgre
   files)
 - ✅ Works in distributed Caddy setups thanks to distributed locking with fencing tokens ([pglock](https://github.com/cirello-io/pglock))
 - ✅ Fully tested ([integration tests](https://github.com/dmarcwise/caddy-storage-postgresql/blob/main/storage_test.go) + [smoke tests and real export test](https://github.com/dmarcwise/caddy-storage-postgresql/blob/main/.github/workflows/test.yml))
+- ✅ Works with distributed rate limiting ([mholt/caddy-ratelimit](https://github.com/mholt/caddy-ratelimit))
 
 ## How to use
 
