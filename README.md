@@ -33,3 +33,5 @@ Configure Caddy to use the PostgreSQL storage module. Example `Caddyfile`:
 The `dsn` parameter is a [PostgreSQL connection string](https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING), either as a key/value string or as a connection URI.
 
 The `sslmode` connection parameter defaults to `require`. We recommend setting a `statement_timeout` (e.g. `30s`) and other [basic parameters](https://brandur.org/fragments/postgres-parameters).
+
+This module implementation already sets the following connection pooling parameters: maximum open connection (`10`), maximum idle connections (`3`), and connection maximum idle time (`1h`).

@@ -78,6 +78,13 @@ func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 		return err
 	}
 
+	// Limit number of open connections
+	db.SetMaxOpenConns(10)
+	// Limit idle connections to 3
+	db.SetMaxIdleConns(3)
+	// Close idle connections after 1 hour
+	db.SetConnMaxIdleTime(time.Hour)
+
 	s.db = db
 
 	// Initialize pglock
