@@ -14,7 +14,7 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/certmagic"
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"go.uber.org/zap"
 )
 
@@ -72,7 +72,7 @@ func (s *PostgresStorage) Provision(ctx caddy.Context) error {
 	s.Dsn = caddy.NewReplacer().ReplaceAll(s.Dsn, "")
 
 	// Create PostgreSQL connection pool
-	db, err := sql.Open("postgres", s.Dsn)
+	db, err := sql.Open("pgx", s.Dsn)
 	if err != nil {
 		s.logger.Error("could not create connection pool", zap.Error(err))
 		return err
