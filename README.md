@@ -34,4 +34,8 @@ The `dsn` parameter is a [PostgreSQL connection string](https://www.postgresql.o
 
 The `sslmode` connection parameter defaults to `require`. We recommend setting a `statement_timeout` (e.g. `30s`) and other [basic parameters](https://brandur.org/fragments/postgres-parameters).
 
-This module implementation already sets the following connection pooling parameters: maximum open connection (`10`), maximum idle connections (`3`), and connection maximum idle time (`1h`).
+This module implementation already sets the following connection pooling parameters:
+
+- Maximum open connections: `10`
+- Maximum idle connections: `3`
+- Connection maximum idle time: `1h`
