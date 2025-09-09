@@ -3,7 +3,7 @@
 > [!WARNING]
 > This project is still a work in progress. Do not use in production.
 
-A storage implementation for [Caddy](https://caddyserver.com/) that uses PostgreSQL as the backend.
+A storage implementation for [Caddy](https://caddyserver.com/) / [certmagic](https://github.com/caddyserver/certmagic) that uses PostgreSQL as the backend.
 
 - ✅ Supports all Caddy storage operations
 - ✅ Directories semantics fully implemented (e.g. listing objects in a directory)
@@ -19,6 +19,12 @@ Build the module into your Caddy binary:
 
 ```shell
 xcaddy build --with github.com/dmarcwise/caddy-storage-postgresql
+```
+
+You can pin a specific commit with:
+
+```shell
+xcaddy build --with github.com/dmarcwise/caddy-storage-postgresql@<commit-hash>
 ```
 
 Configure Caddy to use the PostgreSQL storage module. Example `Caddyfile`:
