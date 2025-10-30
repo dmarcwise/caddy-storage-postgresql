@@ -1,7 +1,7 @@
-# Caddy Storage PostgresQL
+# Caddy Storage PostgreSQL
 
 > [!WARNING]
-> This project is still a work in progress. Do not use in production.
+> This project is still a work in progress, althrough used by [DMARCwise](https://dmarcwise.io) in production.
 
 A storage implementation for [Caddy](https://caddyserver.com/) / [certmagic](https://github.com/caddyserver/certmagic) that uses PostgreSQL as the backend.
 
